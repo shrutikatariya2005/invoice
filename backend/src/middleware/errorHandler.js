@@ -4,18 +4,17 @@
 const errorHandler = (err, req, res, next) => {
     console.error('Error', err.message);
 
-    if (err.code === 'ER_N0_REFERENCED_ROW_2') {
+    if (err.code === 'ER_DUP_ENTRY') {
         return res.status(409).json({
-            error: 'Dublicate entry',
+            error: 'Duplicate entry',
             message: 'A record with this value already exists'
         });
     }
     if (err.code === 'ER_NO_REFERENCED_ROW_2') {
         return res.status(400).json({
-            error: 'Invalid refrence',
-            message: 'Refrenced data does not exist'
+            error: 'Invalid reference',
+            message: 'Referenced data does not exist'
         });
-
     }
     res.status(err.status || 500).json({
         error: 'server.error',

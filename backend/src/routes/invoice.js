@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const db = require('../../db');
+const { requireFields } = require('../middleware/validate');
 
 // Helper: Auto-generate invoice number INV-2026-0001
 async function generateInvoiceNumber(conn) {
@@ -67,6 +68,34 @@ router.get('/', async (req, res, next) => {
     query += ' ORDER BY i.invoice_date DESC';
 
     const [rows] = await db.query(query, params);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+// GET /api/invoice/report/client-items
+router.get('/report/master', async (req, res, next) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+       c.name AS client_name,
+       c.phone AS client_phone,
+       c.email AS client_email,
+     (SELECT COUNT(*) FROM INVOICE WHERE client_id =c.client_id) AS
+     total_invoices,
+     i.invoice_number,
+     i.invoice_date,
+     i.due_date,
+     i.status,
+     i.grand_total,
+     i.balance_due,
+     ii.item_name,
+     ii.quantity,
+     ii.total_amount AS item_total
+     FROM invoice_item ii
+     JOIN invoice i ON ii.invoice_id = i.invoice_id
+     JOIN client c ON i.client_id = c.client_id
+     ORDER BY i.invoice_date DESC
+
+    `);
     res.json(rows);
   } catch (err) { next(err); }
 });
@@ -299,11 +328,12 @@ router.patch('/:id/status', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/invoice/:id  (DRAFT only)
+// DELETE /api/invoice/:id  (deletes any invoice + its items)
 router.delete('/:id', async (req, res, next) => {
   try {
+    // Step 1 — check invoice exists
     const [rows] = await db.query(
-      'SELECT status FROM invoice WHERE invoice_id = ?',
+      'SELECT invoice_id, status FROM invoice WHERE invoice_id = ?',
       [req.params.id]
     );
 
@@ -311,60 +341,146 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    if (rows[0].status !== 'DRAFT') {
-      return res.status(400).json({
-        error: `Only DRAFT invoices can be deleted. This is ${rows[0].status}.`
-      });
-    }
+    // Step 2 — delete line items first (foreign key constraint)
+    await db.query(
+      'DELETE FROM invoice_item WHERE invoice_id = ?',
+      [req.params.id]
+    );
 
+    // Step 3 — delete the invoice
     await db.query(
       'DELETE FROM invoice WHERE invoice_id = ?',
       [req.params.id]
     );
 
-    res.json({ message: 'Invoice deleted successfully' });
+    res.json({
+      message: 'Invoice deleted successfully',
+      invoice_id: parseInt(req.params.id)
+    });
   } catch (err) { next(err); }
 });
 // PUT /api/invoice/:id (Update an existing invoice)
-router.put('/:id', async (req, res, next) => {
-  const conn = await db.getConnection();
-  try {
-    await conn.beginTransaction();
-    const { client_id, invoice_date, due_date, discount_amount = 0, items } = req.body;
-    const invoiceId = req.params.id;
+router.put(
+  '/:id',
+  requireFields(['client_id', 'invoice_date', 'due_date', 'items', 'discount_amount', 'status']),
+  async (req, res, next) => {
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
 
-    // 1. Calculate totals
-    const calculatedItems = items.map(calculateItem);
-    const subtotal = parseFloat(calculatedItems.reduce((sum, i) => sum + (i.quantity * i.rate), 0).toFixed(2));
-    const taxable_amount = parseFloat((subtotal - discount_amount).toFixed(2));
-    const tax_amount = parseFloat(calculatedItems.reduce((sum, i) => sum + i.tax_amount, 0).toFixed(2));
-    const grand_total = parseFloat((taxable_amount + tax_amount).toFixed(2));
+      const { client_id, invoice_date, due_date, discount_amount = 0, items, status } = req.body;
+      const invoiceId = req.params.id;
 
-    // 2. Update Header
-    await conn.query(
-      `UPDATE invoice SET client_id=?, invoice_date=?, due_date=?, subtotal=?, discount_amount=?, taxable_amount=?, tax_amount=?, grand_total=? WHERE invoice_id=?`,
-      [client_id, invoice_date, due_date, subtotal, parseFloat(discount_amount), taxable_amount, tax_amount, grand_total, invoiceId]
-    );
-
-    // 3. Delete old items & Insert new items
-    await conn.query(`DELETE FROM invoice_item WHERE invoice_id=?`, [invoiceId]);
-    for (let i = 0; i < calculatedItems.length; i++) {
-      const item = calculatedItems[i];
-      await conn.query(
-        `INSERT INTO invoice_item (invoice_id, product_id, item_name, hsn_sac_code, quantity, unit, rate, discount_pct, taxable_amount, tax_id, tax_amount, total_amount, sort_order) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [invoiceId, item.product_id || null, item.item_name, item.hsn_sac_code, item.quantity, item.unit || 'Nos', item.rate, item.discount_pct || 0, item.taxable_amount, item.tax_id || null, item.tax_amount, item.total_amount, i + 1]
+      // 1. Check invoice exists
+      const [existing] = await conn.query(
+        'SELECT invoice_id FROM invoice WHERE invoice_id = ?',
+        [invoiceId]
       );
+      if (existing.length === 0) {
+        await conn.rollback();
+        conn.release();
+        return res.status(404).json({ error: 'Invoice not found' });
+      }
+
+      // 2. Validate items array is not empty
+      if (!Array.isArray(items) || items.length === 0) {
+        await conn.rollback();
+        conn.release();
+        return res.status(400).json({ error: 'At least one item is required' });
+      }
+
+      // 3. Calculate totals
+      const calculatedItems = items.map(calculateItem);
+      const subtotal = parseFloat(
+        calculatedItems.reduce((sum, i) => sum + (i.quantity * i.rate), 0).toFixed(2)
+      );
+      const taxable_amount = parseFloat((subtotal - discount_amount).toFixed(2));
+      const tax_amount = parseFloat(
+        calculatedItems.reduce((sum, i) => sum + i.tax_amount, 0).toFixed(2)
+      );
+      const grand_total = parseFloat((taxable_amount + tax_amount).toFixed(2));
+
+      // 4. Update invoice header
+      await conn.query(
+        `UPDATE invoice SET
+           client_id       = ?,
+           invoice_date    = ?,
+           due_date        = ?,
+           subtotal        = ?,
+           discount_amount = ?,
+           taxable_amount  = ?,
+           tax_amount      = ?,
+           grand_total     = ?,
+           status = ?
+         WHERE invoice_id = ?`,
+        [client_id, invoice_date, due_date, subtotal,
+          parseFloat(discount_amount), taxable_amount, tax_amount,
+          grand_total, status || 'DRAFT', invoiceId]
+      );
+
+      // 5. Delete old line items and insert new ones
+      await conn.query('DELETE FROM invoice_item WHERE invoice_id = ?', [invoiceId]);
+
+      for (let i = 0; i < calculatedItems.length; i++) {
+        const item = calculatedItems[i];
+        await conn.query(
+          `INSERT INTO invoice_item (
+             invoice_id, product_id, item_name, hsn_sac_code,
+             quantity, unit, rate, discount_pct,
+             taxable_amount, tax_id, tax_amount, total_amount, sort_order
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            invoiceId,
+            item.product_id || null,
+            item.item_name,
+            item.hsn_sac_code,
+            item.quantity,
+            item.unit || 'Nos',
+            item.rate,
+            item.discount_pct || 0,
+            item.taxable_amount,
+            item.tax_id || null,
+            item.tax_amount,
+            item.total_amount,
+            i + 1
+          ]
+        );
+      }
+
+      await conn.commit();
+      res.json({
+        message: 'Invoice updated successfully',
+        invoice_id: parseInt(invoiceId),
+        grand_total: grand_total
+      });
+    } catch (err) {
+      await conn.rollback();
+      next(err);
+    } finally {
+      conn.release();
     }
-
-    await conn.commit();
-    res.json({ message: 'Invoice updated successfully', invoice_id: invoiceId });
-  } catch (err) {
-    await conn.rollback();
-    next(err);
-  } finally {
-    conn.release();
   }
-});
+);
 
+{/*//GET/api/product/report/sales
+router.get('/report/sales', async (req, res, next) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+      p.name AS product_name,
+      p.created_at AS creation_date,
+      t.tax_name AS product_gst,
+      COALESCE(sum(ii.quantity),0) AS total_qty_sold,
+      COALESCE(sum(ii.total_amount),0) AS total_revenue
+      FROM product p
+      LEFT JOIN tax t ON p.tax_id =t.tax_id
+      LEFT JOIN invoice_item ii ON p.product_id =ii.product_id
+      WHERE p.is_active =1 AND p.seller_id =1
+      GROUP BY p.product_id , p.name , p.created_at , t.tax_name
+    ORDER BY total_revenue DESC
+    `);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+*/}
 module.exports = router;

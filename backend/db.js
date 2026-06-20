@@ -14,7 +14,7 @@ const pool = mysql.createPool({
   timezone:           '+05:30'
 });
 
-// Test connection when server starts
+
 pool.getConnection()
   .then(conn => {
     conn.release();

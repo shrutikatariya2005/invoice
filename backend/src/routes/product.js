@@ -1,5 +1,6 @@
 const router = require('express').Router();
-const db     = require('../../db');
+const db = require('../../db');
+const { requireFields } = require('../middleware/validate');
 
 // GET /api/product
 router.get('/', async (req, res, next) => {
@@ -45,13 +46,13 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/product
-router.post('/', async (req, res, next) => {
+router.post('/', requireFields(['name', 'hsn_sac_code', 'rate']), async (req, res, next) => {
   try {
     const {
       name,
       description,
       hsn_sac_code,
-      unit  = 'Nos',
+      unit = 'Nos',
       rate,
       tax_id
     } = req.body;
@@ -74,23 +75,23 @@ router.post('/', async (req, res, next) => {
        ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
       [
         name,
-        description  || null,
+        description || null,
         hsn_sac_code,
         unit,
         rate,
-        tax_id       || null
+        tax_id || null
       ]
     );
 
     res.status(201).json({
-      message:    'Product created successfully',
+      message: 'Product created successfully',
       product_id: result.insertId
     });
   } catch (err) { next(err); }
 });
 
 // PUT /api/product/:id
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requireFields(['name', 'hsn_sac_code', 'rate']), async (req, res, next) => {
   try {
     const {
       name, description, hsn_sac_code,
@@ -143,6 +144,28 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     res.json({ message: 'Product deleted successfully' });
+  } catch (err) { next(err); }
+});
+
+//GET /api/product/report/sales
+router.get('/report/sales', async (req, res, next) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT
+      p.name AS product_name,
+      p.created_at AS creation_date,
+      t.tax_name as product_gst,
+      COALESCE(SUM(CASE WHEN i.status = 'PAID' THEN ii.quantity ELSE 0 END),0) AS total_qty_sold,
+      COALESCE(SUM(CASE WHEN i.status = 'PAID' THEN ii.total_amount ELSE 0 END),0) AS total_revenue
+      FROM product p
+      LEFT JOIN tax t ON p.tax_id = t.tax_id
+      LEFT JOIN invoice_item ii ON p.product_id = ii.product_id
+      LEFT JOIN  invoice i ON ii.invoice_id = i.invoice_id
+      WHERE p.is_active = 1 AND p.seller_id =1 
+      GROUP BY p.product_id , p.name,p.created_at , t.tax_name
+      ORDER BY total_revenue DESC `);
+
+    res.json(rows);
   } catch (err) { next(err); }
 });
 

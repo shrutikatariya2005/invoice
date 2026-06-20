@@ -1,20 +1,11 @@
 const router = require('express').Router();
-const db     = require('../../db');
-
+const db = require('../../db');
+const { requireFields } = require('../middleware/validate');
 // GET /api/client
 router.get('/', async (req, res, next) => {
   try {
     const [rows] = await db.query(
-      `SELECT
-         client_id,
-         name,
-         legal_name,
-         city,
-         state,
-         gstin,
-         phone,
-         email,
-         created_at
+      `SELECT *
        FROM client
        WHERE is_active = 1
        ORDER BY name ASC`
@@ -38,7 +29,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/client
-router.post('/', async (req, res, next) => {
+router.post('/', requireFields(['name']), async (req, res, next) => {
   try {
     const {
       name,
@@ -74,26 +65,26 @@ router.post('/', async (req, res, next) => {
       [
         name,
         legal_name || null,
-        address    || null,
-        city       || null,
-        state      || null,
-        pincode    || null,
-        gstin      || null,
-        pan        || null,
-        phone      || null,
-        email      || null
+        address || null,
+        city || null,
+        state || null,
+        pincode || null,
+        gstin || null,
+        pan || null,
+        phone || null,
+        email || null
       ]
     );
 
     res.status(201).json({
-      message:   'Client created successfully',
+      message: 'Client created successfully',
       client_id: result.insertId
     });
   } catch (err) { next(err); }
 });
 
 // PUT /api/client/:id
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requireFields(['name']), async (req, res, next) => {
   try {
     const {
       name, legal_name, address,

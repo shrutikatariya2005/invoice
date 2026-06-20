@@ -23,7 +23,7 @@ app.use('/api/tax', require('./src/routes/tax'));
 app.use('/api/client', require('./src/routes/client'));
 app.use('/api/product', require('./src/routes/product'));
 app.use('/api/invoice', require('./src/routes/invoice'));
-app.use('api/payment', require('./src/routes/payment'));
+app.use('/api/payment', require('./src/routes/payment'));
 // Health check route
 app.get('/api/health',(req,res)=>{
     res.json({
