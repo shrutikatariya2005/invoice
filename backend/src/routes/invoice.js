@@ -46,6 +46,7 @@ router.get('/', async (req, res, next) => {
     let query = `
       SELECT
         i.invoice_id,
+        i.client_id,
         i.invoice_number,
         i.invoice_date,
         i.due_date,
@@ -76,22 +77,18 @@ router.get('/report/master', async (req, res, next) => {
   try {
     const [rows] = await db.query(`
       SELECT 
-       c.name AS client_name,
-       c.phone AS client_phone,
-       c.email AS client_email,
-     (SELECT COUNT(*) FROM INVOICE WHERE client_id =c.client_id) AS
-     total_invoices,
+     i.invoice_id,
      i.invoice_number,
      i.invoice_date,
      i.due_date,
      i.status,
      i.grand_total,
      i.balance_due,
-     ii.item_name,
-     ii.quantity,
-     ii.total_amount AS item_total
-     FROM invoice_item ii
-     JOIN invoice i ON ii.invoice_id = i.invoice_id
+     c.name AS client_name,
+     c.phone AS client_phone,
+     c.email AS client_email,
+     (SELECT COUNT(*) FROM invoice where client_id=c.client_id) AS total_invoices
+     FROM invoice i
      JOIN client c ON i.client_id = c.client_id
      ORDER BY i.invoice_date DESC
 
