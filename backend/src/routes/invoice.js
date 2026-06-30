@@ -75,7 +75,33 @@ router.get('/', async (req, res, next) => {
 // GET /api/invoice/report/client-items
 router.get('/report/master', async (req, res, next) => {
   try {
-    const [rows] = await db.query(`
+
+    //Read filter value from url
+    // Example URL: /api/invoice/report/master?filter=THIS_WEEK
+
+    const { filter } = req.query;
+    // build where claus based on the filter
+    let whereClause = '';
+
+    if (filter === 'TODAY') {
+      whereClause = `WHERE DATE(i.invoice_date) >=CURDATE() - INTERVAL 1 DAY
+                        AND DATE(i.invoice_date)<= CURDATE()
+                        AND DAYOFWEEK(i.invoice_date) !=1`;
+    }
+    else if (filter === 'THIS_WEEK') {
+      whereClause = ` WHERE DATE(i.invoice_date) >=
+      CURDATE()-INTERVAL(DAYOFWEEK(CURDATE())%7+7) DAY
+      AND DATE(i.invoice_date) <= CURDATE()
+      AND DAYOFWEEK(i.invoice_date) !=1`;
+    }
+    else if (filter === 'THIS_MONTH') {
+      whereClause = `WHERE  i.invoice_date >= LAST_DAY(CURDATE() - INTERVAL 2 MONTH) + INTERVAL 1 DAY
+        AND i.invoice_date <= CURDATE()`;
+    }
+    //if no filter returns all invoices
+
+    const [rows] =
+      await db.query(`
       SELECT 
      i.invoice_id,
      i.invoice_number,
@@ -87,9 +113,11 @@ router.get('/report/master', async (req, res, next) => {
      c.name AS client_name,
      c.phone AS client_phone,
      c.email AS client_email,
-     (SELECT COUNT(*) FROM invoice where client_id=c.client_id) AS total_invoices
+     (SELECT COUNT(*) FROM invoice
+      where client_id=c.client_id) AS total_invoices
      FROM invoice i
      JOIN client c ON i.client_id = c.client_id
+     ${whereClause}
      ORDER BY i.invoice_date DESC
 
     `);
