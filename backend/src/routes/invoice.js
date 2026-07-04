@@ -76,27 +76,47 @@ router.get('/', async (req, res, next) => {
 router.get('/report/master', async (req, res, next) => {
   try {
 
-    //Read filter value from url
-    // Example URL: /api/invoice/report/master?filter=THIS_WEEK
 
-    const { filter } = req.query;
+    const { filter, status, search, startDate, endDate } = req.query;
     // build where claus based on the filter
     let whereClause = '';
+    const params = [];
 
-    if (filter === 'TODAY') {
-      whereClause = `WHERE DATE(i.invoice_date) >=CURDATE() - INTERVAL 1 DAY
-                        AND DATE(i.invoice_date)<= CURDATE()
-                        AND DAYOFWEEK(i.invoice_date) !=1`;
-    }
-    else if (filter === 'THIS_WEEK') {
+
+    if (filter === 'THIS_WEEK') {
       whereClause = ` WHERE DATE(i.invoice_date) >=
       CURDATE()-INTERVAL(DAYOFWEEK(CURDATE())%7+7) DAY
       AND DATE(i.invoice_date) <= CURDATE()
       AND DAYOFWEEK(i.invoice_date) !=1`;
     }
-    else if (filter === 'THIS_MONTH') {
-      whereClause = `WHERE  i.invoice_date >= LAST_DAY(CURDATE() - INTERVAL 2 MONTH) + INTERVAL 1 DAY
-        AND i.invoice_date <= CURDATE()`;
+
+    else if (filter === 'MONTHLY') {
+      whereClause = `WHERE YEAR(i.invoice_date) = YEAR(CURDATE())`
+    }
+    else if (filter && filter.match(/^\d{4}-\d{2}$/)) {
+      //if user sends a specific month like "2026-06"
+      //fetch that month AND the previous month for the chart
+      whereClause = ` WHERE i.invoice_date >= LAST_DAY('${filter}-01' - INTERVAL 2 MONTH) + INTERVAL 1 DAY 
+                      AND i.invoice_date <= LAST_DAY('${filter}-01')`;
+    }
+
+    // status filter
+    if (status && status !== 'ALL') {
+      whereClause += (whereClause ? ' AND ' : ' WHERE ') +
+        ' i.status = ? ';
+      params.push(status);
+    }
+
+    if (search) {
+      whereClause += (whereClause ? ' AND ' : ' WHERE ') + ' (i.invoice_number LIKE ? OR c.name LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    //Custom date range filter for clicked weeks
+    if (startDate && endDate) {
+      whereClause += (whereClause ? ' AND ' : ' WHERE ') + ' DATE(i.invoice_date) >= ? AND DATE(i.invoice_date)<= ? ';
+      params.push(startDate, endDate);
+
     }
     //if no filter returns all invoices
 
@@ -120,7 +140,7 @@ router.get('/report/master', async (req, res, next) => {
      ${whereClause}
      ORDER BY i.invoice_date DESC
 
-    `);
+    `, params);
     res.json(rows);
   } catch (err) { next(err); }
 });
@@ -217,6 +237,27 @@ router.post('/', async (req, res, next) => {
       });
     }
 
+    {/* for (const item of items) {
+      if (item.product_id) {
+        const [prodRows] = await conn.query('SELECT current_stock, name FROM product WHERE product_id = ? FOR UPDATE',
+          [item.product_id]);
+        if (prodRows.length === 0) {
+          await conn.rollback();
+          conn.release();
+          return res.status(400).json({ error: `Product not found: ${item.item_name})` });
+        }
+
+        if (prodRows[0].current_stock < item.quantity) {
+
+          await conn.rollback();
+          conn.release();
+          return res.status(400).json({
+            error: `Not enough stock for ${prodRows[0].name}.Available: ${prodRows[0].current_stock} 
+              Requested: ${item.quantity}`
+          });
+        }
+      }
+    } */}
     // Calculate all items
     const calculatedItems = items.map(calculateItem);
 
@@ -309,6 +350,20 @@ router.post('/', async (req, res, next) => {
           i + 1
         ]
       );
+      {/* //---NEW: DEDUCT stock & log movement
+      if (item.product_id) {
+        await conn.query(
+          `UPDATE product SET current_stock = current_stock -? WHERE product_id =? `,
+          [item.quantity, item.product_id]
+        );
+
+        await conn.query(
+          `INSERT INTO inventory_movement(product_id,
+          quantity_change , movement_type, refrence_id)
+          VALUES (?,?,'INVOICE_SALE',?)`,
+          [item.product_id, -item.quantity, invoiceId]
+        )
+      }*/}
     }
 
     await conn.commit();

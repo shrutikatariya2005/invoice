@@ -14,6 +14,7 @@ router.get('/', async (req, res, next) => {
          p.unit,
          p.rate,
          p.tax_id,
+         p.current_stock,
          t.tax_name,
          t.cgst_rate,
          t.sgst_rate,
@@ -71,7 +72,8 @@ router.post('/', requireFields(['name', 'hsn_sac_code', 'rate']), async (req, re
          hsn_sac_code,
          unit,
          rate,
-         tax_id
+         tax_id,
+         current_stock
        ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
       [
         name,
@@ -79,10 +81,20 @@ router.post('/', requireFields(['name', 'hsn_sac_code', 'rate']), async (req, re
         hsn_sac_code,
         unit,
         rate,
-        tax_id || null
+        tax_id || null,
+        current_stock
       ]
     );
 
+    // create an intial stock  movement history record if stockk> 0
+    if (current_stock > 0) {
+      await db.query(
+        `INSERT INTO inventory_movement (product_id,
+        quantity_change,movement_type)
+        VALUES (?,?,'MANNUAL_ADD','Intial stock setup')`,
+        [result.insertId, current_stock]
+      );
+    }
     res.status(201).json({
       message: 'Product created successfully',
       product_id: result.insertId
