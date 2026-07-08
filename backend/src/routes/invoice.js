@@ -6,12 +6,12 @@ const { requireFields } = require('../middleware/validate');
 async function generateInvoiceNumber(conn) {
   const year = new Date().getFullYear();
   const [rows] = await conn.query(
-    `SELECT COUNT(*) AS total FROM invoice
-     WHERE YEAR(invoice_date) = ?`,
-    [year]
+    `SELECT MAX(CAST(SUBSTRING_INDEX(invoice_number, '-', -1) AS UNSIGNED)) AS max_num
+     FROM invoice WHERE invoice_number LIKE ?`,
+    [`INV-${year}-%`]
   );
-  const count = rows[0].total + 1;
-  return `INV-${year}-${String(count).padStart(4, '0')}`;
+  const maxNum = rows[0].max_num || 0;
+  return `INV-${year}-${String(maxNum + 1).padStart(4, '0')}`;
 }
 
 // Helper: Calculate each line item amounts
@@ -90,6 +90,19 @@ router.get('/report/master', async (req, res, next) => {
       AND DAYOFWEEK(i.invoice_date) !=1`;
     }
 
+    else if (filter && filter.startsWith('LAST_X_DAYS:')) {
+      const days = parseInt(filter.split(':')[1]) || 7;
+
+      whereClause = ` WHERE DATE(i.invoice_date) >= CURDATE() - INTERVAL ? DAY AND DATE(i.invoice_date) <= CURDATE()`;
+      params.push(days - 1);
+    }
+
+    else if (filter && filter.startsWith('LAST_X_WEEKS:')) {
+      const weeks = parseInt(filter.split(':')[1]) || 4;
+      const days = weeks * 7;
+      whereClause = ` WHERE DATE(i.invoice_date) >= CURDATE() - INTERVAL ? DAY AND DATE(i.invoice_date) <= CURDATE() + INTERVAL 7 DAY`;
+      params.push(days - 1);
+    }
     else if (filter === 'MONTHLY') {
       whereClause = `WHERE YEAR(i.invoice_date) = YEAR(CURDATE())`
     }
@@ -259,7 +272,24 @@ router.post('/', async (req, res, next) => {
       }
     } */}
     // Calculate all items
-    const calculatedItems = items.map(calculateItem);
+    // Fetch all tax rates from the database
+    const taxIds = [...new Set(items.map(i => i.tax_id).filter(Boolean))];
+    let taxMap = {};
+    if (taxIds.length > 0) {
+      const [taxRows] = await conn.query(
+        `SELECT tax_id, cgst_rate, sgst_rate FROM tax WHERE tax_id IN (${taxIds.map(() => '?').join(',')})`,
+        taxIds
+      );
+      taxRows.forEach(t => { taxMap[t.tax_id] = t; });
+    }
+
+    // Enrich items with actual tax rates before calculating
+    const enrichedItems = items.map(item => ({
+      ...item,
+      cgst_rate: taxMap[item.tax_id]?.cgst_rate || 0,
+      sgst_rate: taxMap[item.tax_id]?.sgst_rate || 0,
+    }));
+    const calculatedItems = enrichedItems.map(calculateItem);
 
     // Invoice totals
     const subtotal = parseFloat(
